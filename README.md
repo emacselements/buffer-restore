@@ -1,3 +1,9 @@
+## Support & Donations
+
+If you find this project helpful, consider supporting it!
+
+[Donate via PayPal](https://www.paypal.com/paypalme/revrari)
+
 # buffer-restore
 
 Manual session management for Emacs. Save and restore named window layouts with precise buffer states, including PDF pages and EPUB positions.
