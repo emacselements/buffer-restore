@@ -31,13 +31,15 @@ Manual session management for Emacs. Save and restore named window layouts with 
 - EPUB chapters and position (requires nov.el)
 - Frame positions and sizes (workspaces only)
 
-## Optional Configuration
+## Configuration
 
+**Custom storage location (optional):**
 ```elisp
-;; Custom storage location
 (setq buffer-restore-directory "~/my-sessions")
+```
 
-;; Keybindings
+**Keybindings (optional):**
+```elisp
 (global-set-key (kbd "C-c s s") 'buffer-restore-save-session)
 (global-set-key (kbd "C-c s l") 'buffer-restore-load-session)
 (global-set-key (kbd "C-c w s") 'buffer-restore-save-workspace)
