@@ -46,6 +46,13 @@ Manual session management for Emacs. Save and restore named window layouts with 
 (global-set-key (kbd "C-c w l") 'buffer-restore-load-workspace)
 ```
 
+**Persist history across restarts (optional):**
+```elisp
+(savehist-mode 1)
+(add-to-list 'savehist-additional-variables 'buffer-restore--session-history)
+(add-to-list 'savehist-additional-variables 'buffer-restore--workspace-history)
+```
+
 ## Requirements
 
 Emacs 26.1+

@@ -42,11 +42,8 @@
   (expand-file-name "sessions.el" buffer-restore-directory)
   "File containing the list of all saved sessions.")
 
-(defvar buffer-restore--save-session-history nil
-  "History list for buffer-restore-save-session.")
-
-(defvar buffer-restore--load-session-history nil
-  "History list for buffer-restore-load-session.")
+(defvar buffer-restore--session-history nil
+  "History list for buffer-restore session commands (shared between save and load).")
 
 ;;; Session Data Structure
 ;; A session is a plist with:
@@ -204,8 +201,18 @@ Returns the restored buffer or nil if restoration failed."
                  buf))))
 
           ('special
-           (let ((name (plist-get buffer-state :name)))
-             (get-buffer name)))
+           (let ((name (plist-get buffer-state :name))
+                 (mode (plist-get buffer-state :mode)))
+             (cond
+              ;; Try to restore org-agenda buffers
+              ((and (string-prefix-p "*Org Agenda" name)
+                    (fboundp 'org-agenda))
+               ;; Call org-agenda to recreate the buffer
+               (org-agenda nil "a")
+               (get-buffer name))
+              
+              ;; For other special buffers, just check if they exist
+              (t (get-buffer name)))))
 
           (_ nil))
       (error
@@ -330,7 +337,7 @@ NAME is the name to give this session."
    (list (completing-read "Session name: "
                          (buffer-restore--list-session-names)
                          nil nil nil
-                         'buffer-restore--save-session-history)))
+                         'buffer-restore--session-history)))
   (buffer-restore--ensure-directory)
 
   (let* ((frame (selected-frame))
@@ -356,8 +363,8 @@ NAME is the name to give this session."
         (insert "\n")))
 
     ;; Add to beginning of history so it appears with up arrow
-    (setq buffer-restore--save-session-history
-          (cons name (delete name buffer-restore--save-session-history)))
+    (setq buffer-restore--session-history
+          (cons name (delete name buffer-restore--session-history)))
 
     (message "Session '%s' saved successfully" name)))
 
@@ -366,14 +373,14 @@ NAME is the name to give this session."
   "Restore a previously saved session by NAME."
   (interactive
    (list (let* ((sessions (buffer-restore--list-session-names))
-                (default (car buffer-restore--load-session-history)))
+                (default (car buffer-restore--session-history)))
            (completing-read
             (if default
                 (format "Load session (default %s): " default)
               "Load session: ")
             sessions
             nil t nil
-            'buffer-restore--load-session-history
+            'buffer-restore--session-history
             default))))
 
   (let ((session-file (expand-file-name (concat name ".el")
@@ -400,8 +407,8 @@ NAME is the name to give this session."
         (buffer-restore--restore-window-tree window-tree))
 
       ;; Add to beginning of history so it appears with up arrow
-      (setq buffer-restore--load-session-history
-            (cons name (delete name buffer-restore--load-session-history)))
+      (setq buffer-restore--session-history
+            (cons name (delete name buffer-restore--session-history)))
 
       (message "Session '%s' restored" name))))
 
@@ -525,11 +532,8 @@ Displays the workspace data structure in a readable format."
   (expand-file-name "buffer-restore-workspaces" user-emacs-directory)
   "Directory where workspace files are stored.")
 
-(defvar buffer-restore--save-workspace-history nil
-  "History list for buffer-restore-save-workspace.")
-
-(defvar buffer-restore--load-workspace-history nil
-  "History list for buffer-restore-load-workspace.")
+(defvar buffer-restore--workspace-history nil
+  "History list for buffer-restore workspace commands (shared between save and load).")
 
 (defun buffer-restore--ensure-workspace-directory ()
   "Ensure the workspace directory exists."
@@ -551,7 +555,7 @@ NAME is the name to give this workspace."
    (list (completing-read "Workspace name: "
                          (buffer-restore--list-workspace-names)
                          nil nil nil
-                         'buffer-restore--save-workspace-history)))
+                         'buffer-restore--workspace-history)))
   (buffer-restore--ensure-workspace-directory)
 
   (let* ((selected-frame-obj (selected-frame))
@@ -600,8 +604,8 @@ NAME is the name to give this workspace."
         (insert "\n")))
 
     ;; Add to beginning of history so it appears with up arrow
-    (setq buffer-restore--save-workspace-history
-          (cons name (delete name buffer-restore--save-workspace-history)))
+    (setq buffer-restore--workspace-history
+          (cons name (delete name buffer-restore--workspace-history)))
 
     ;; Show which frames were saved with useful identifiers
     (let ((msg (format "Workspace '%s' saved successfully (%d frames: %s)"
@@ -634,14 +638,14 @@ NAME is the name to give this workspace."
 This will close all existing frames and restore the saved workspace."
   (interactive
    (list (let* ((workspaces (buffer-restore--list-workspace-names))
-                (default (car buffer-restore--load-workspace-history)))
+                (default (car buffer-restore--workspace-history)))
            (completing-read
             (if default
                 (format "Load workspace (default %s): " default)
               "Load workspace: ")
             workspaces
             nil t nil
-            'buffer-restore--load-workspace-history
+            'buffer-restore--workspace-history
             default))))
 
   (let ((workspace-file (expand-file-name (concat name ".el")
@@ -666,6 +670,13 @@ This will close all existing frames and restore the saved workspace."
       (let ((frames-to-delete (cdr (frame-list))))
         (dolist (frame frames-to-delete)
           (delete-frame frame)))
+
+      ;; Kill all file-visiting buffers to ensure clean restoration
+      (dolist (buffer (buffer-list))
+        (when (or (buffer-file-name buffer)
+                  (with-current-buffer buffer
+                    (memq major-mode '(pdf-view-mode nov-mode))))
+          (kill-buffer buffer)))
 
       ;; Restore dominant frame first in the existing frame (or first if no dominant)
       (when (> (length frame-sessions) 0)
@@ -726,8 +737,8 @@ This will close all existing frames and restore the saved workspace."
                 (let ((window-tree (plist-get session :window-tree)))
                   (buffer-restore--restore-window-tree window-tree)))
 
-              ;; Lower non-dominant frames immediately
-              (lower-frame new-frame)))))
+              ;; Ensure frame is visible (don't use lower-frame as it may iconify)
+              (make-frame-visible new-frame)))))
 
       ;; Finally, raise and focus the dominant frame to ensure it's on top of everything
       (let ((dominant-frame (selected-frame)))
@@ -742,8 +753,8 @@ This will close all existing frames and restore the saved workspace."
         (set-frame-parameter dominant-frame 'z-group nil))
 
       ;; Add to beginning of history so it appears with up arrow
-      (setq buffer-restore--load-workspace-history
-            (cons name (delete name buffer-restore--load-workspace-history)))
+      (setq buffer-restore--workspace-history
+            (cons name (delete name buffer-restore--workspace-history)))
 
       (message "Workspace '%s' restored (%d frames)" name (length frame-sessions)))))
 
