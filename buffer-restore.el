@@ -107,6 +107,12 @@ Returns a plist with buffer information."
               :line (line-number-at-pos point)
               :column (current-column)))
 
+       ;; Dired buffers
+       ((eq mode 'dired-mode)
+        (list :type 'dired
+              :directory default-directory
+              :point point))
+
        ;; Special/internal buffers we can try to restore
        ((string-match-p "^\\*" name)
         (list :type 'special
@@ -200,6 +206,16 @@ Returns the restored buffer or nil if restoration failed."
                      (goto-char (min point (point-max)))))
                  buf))))
 
+          ('dired
+           (let ((directory (plist-get buffer-state :directory)))
+             (when (and directory (file-directory-p directory))
+               (let ((buf (dired-noselect directory))
+                     (point (plist-get buffer-state :point)))
+                 (with-current-buffer buf
+                   (when point
+                     (goto-char (min point (point-max)))))
+                 buf))))
+
           ('special
            (let ((name (plist-get buffer-state :name))
                  (mode (plist-get buffer-state :mode)))
@@ -210,7 +226,7 @@ Returns the restored buffer or nil if restoration failed."
                ;; Call org-agenda to recreate the buffer
                (org-agenda nil "a")
                (get-buffer name))
-              
+
               ;; For other special buffers, just check if they exist
               (t (get-buffer name)))))
 
