@@ -35,6 +35,8 @@ Manual session management for Emacs. Save and restore named window layouts with 
 - File buffers with cursor position
 - PDF pages, zoom, and scroll (requires pdf-tools)
 - EPUB chapters and position (requires nov.el)
+- Dired buffers with directory and position
+- Org-agenda buffers
 - Frame positions and sizes (workspaces only)
 
 ## Configuration
