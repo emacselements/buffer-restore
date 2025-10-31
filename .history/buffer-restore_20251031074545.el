@@ -1,6 +1,6 @@
 ;;; buffer-restore.el --- Save and restore frame configurations with buffer states -*- lexical-binding: t; -*-
 
-;; Author: Raoul Comninos
+;; Author: Rari Comninos
 ;; Version: 1.0
 ;; Package-Requires: ((emacs "26.1"))
 
