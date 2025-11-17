@@ -274,9 +274,7 @@ TREE contains additional window state like point and scroll."
          (when (eq major-mode 'pdf-view-mode)
            (let ((page (plist-get buffer-state :page))
                  (slice (plist-get buffer-state :slice))
-                 (scale (plist-get buffer-state :scale))
-                 (hscroll (plist-get tree :hscroll))
-                 (vscroll (plist-get tree :vscroll)))
+                 (scale (plist-get buffer-state :scale)))
              (when page
                (pdf-view-goto-page page))
              (when slice
@@ -284,11 +282,10 @@ TREE contains additional window state like point and scroll."
              (when (and scale (boundp 'pdf-view-display-size))
                (setq pdf-view-display-size scale)
                (pdf-view-redisplay))
-             ;; Restore exact scroll positions for PDFs
-             (when hscroll
-               (set-window-hscroll window hscroll))
-             (when vscroll
-               (set-window-vscroll window vscroll t)))))
+             ;; Skip hscroll/vscroll restoration for PDFs to avoid rendering artifacts
+             ;; Force a complete redisplay and give pdf-tools time to settle
+             (redisplay t)
+             (sit-for 0.1))))
 
         ('epub
          (when (eq major-mode 'nov-mode)
