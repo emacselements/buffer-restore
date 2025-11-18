@@ -275,14 +275,21 @@ TREE contains additional window state like point and scroll."
            (let ((page (plist-get buffer-state :page))
                  (slice (plist-get buffer-state :slice))
                  (scale (plist-get buffer-state :scale)))
+             ;; Clear any existing rendering state if function exists
+             (when (fboundp 'pdf-cache-clear-images)
+               (pdf-cache-clear-images))
+             ;; Restore PDF state
              (when page
                (pdf-view-goto-page page))
              (when slice
                (apply #'pdf-view-set-slice slice))
              (when (and scale (boundp 'pdf-view-display-size))
                (setq pdf-view-display-size scale)
-               (pdf-view-redisplay))
+               (pdf-view-redisplay t))
              ;; Skip hscroll/vscroll restoration for PDFs to avoid rendering artifacts
+             ;; Explicitly reset scroll positions to prevent rendering artifacts
+             (set-window-hscroll window 0)
+             (set-window-vscroll window 0 t)
              ;; Force a complete redisplay and give pdf-tools time to settle
              (redisplay t)
              (sit-for 0.1))))
