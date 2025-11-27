@@ -179,7 +179,10 @@ Returns the restored buffer or nil if restoration failed."
              (when (and file (file-exists-p file))
                ;; Just open the file, don't set PDF state yet
                ;; We'll do that after the window is set up
-               (find-file-noselect file))))
+               (let ((buf (find-file-noselect file)))
+                 (with-current-buffer buf
+                   (set-buffer-modified-p nil))
+                 buf))))
 
           ('epub
            (let ((file (plist-get buffer-state :file)))
@@ -193,7 +196,8 @@ Returns the restored buffer or nil if restoration failed."
                        (when index
                          (nov-goto-document index))
                        (when point
-                         (goto-char (min point (point-max)))))))
+                         (goto-char (min point (point-max))))))
+                   (set-buffer-modified-p nil))
                  buf))))
 
           ('file
@@ -203,7 +207,8 @@ Returns the restored buffer or nil if restoration failed."
                      (point (plist-get buffer-state :point)))
                  (with-current-buffer buf
                    (when point
-                     (goto-char (min point (point-max)))))
+                     (goto-char (min point (point-max))))
+                   (set-buffer-modified-p nil))
                  buf))))
 
           ('dired
@@ -213,7 +218,8 @@ Returns the restored buffer or nil if restoration failed."
                      (point (plist-get buffer-state :point)))
                  (with-current-buffer buf
                    (when point
-                     (goto-char (min point (point-max)))))
+                     (goto-char (min point (point-max))))
+                   (set-buffer-modified-p nil))
                  buf))))
 
           ('special
@@ -359,6 +365,17 @@ NAME is the name to give this session."
                          nil nil nil
                          'buffer-restore--session-history)))
   (buffer-restore--ensure-directory)
+
+  ;; Save all modified file-visiting buffers in the current frame
+  (let ((frame-buffers (delete-dups
+                        (mapcar #'window-buffer
+                                (window-list (selected-frame) 'no-minibuf)))))
+    (dolist (buf frame-buffers)
+      (when (and (buffer-live-p buf)
+                 (buffer-modified-p buf)
+                 (buffer-file-name buf))
+        (with-current-buffer buf
+          (save-buffer)))))
 
   (let* ((frame (selected-frame))
          (session (list :name name
@@ -577,6 +594,18 @@ NAME is the name to give this workspace."
                          nil nil nil
                          'buffer-restore--workspace-history)))
   (buffer-restore--ensure-workspace-directory)
+
+  ;; Save all modified file-visiting buffers across all frames
+  (dolist (frame (frame-list))
+    (let ((frame-buffers (delete-dups
+                          (mapcar #'window-buffer
+                                  (window-list frame 'no-minibuf)))))
+      (dolist (buf frame-buffers)
+        (when (and (buffer-live-p buf)
+                   (buffer-modified-p buf)
+                   (buffer-file-name buf))
+          (with-current-buffer buf
+            (save-buffer))))))
 
   (let* ((selected-frame-obj (selected-frame))
          (frames (frame-list))
