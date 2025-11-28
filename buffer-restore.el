@@ -82,13 +82,12 @@ Returns a plist with buffer information."
        ;; PDF buffers (pdf-tools)
        ((eq mode 'pdf-view-mode)
         (let ((page (ignore-errors (pdf-view-current-page)))
-              (slice (ignore-errors (pdf-view-current-slice)))
               (scale (when (boundp 'pdf-view-display-size)
                        pdf-view-display-size)))
           (list :type 'pdf
                 :file file
                 :page page
-                :slice (buffer-restore--serialize-value slice)
+                ;; Don't save slice - it causes rendering artifacts
                 :scale (buffer-restore--serialize-value scale))))
 
        ;; EPUB buffers (nov-mode)
@@ -126,7 +125,8 @@ Returns a plist with buffer information."
   "Capture the state of WINDOW including its buffer.
 Returns a plist with window information."
   (let* ((buffer (window-buffer window))
-         (buffer-state (buffer-restore--capture-buffer-state buffer)))
+         (buffer-state (buffer-restore--capture-buffer-state buffer))
+         (is-pdf (with-current-buffer buffer (eq major-mode 'pdf-view-mode))))
     (when buffer-state
       (list :buffer-state buffer-state
             :width (window-total-width window)
@@ -135,8 +135,9 @@ Returns a plist with window information."
                         (nth 1 (window-edges window))
                         (nth 2 (window-edges window))
                         (nth 3 (window-edges window)))
-            :hscroll (window-hscroll window)
-            :vscroll (window-vscroll window t)
+            ;; Don't save scroll positions for PDFs - they cause artifacts
+            :hscroll (if is-pdf 0 (window-hscroll window))
+            :vscroll (if is-pdf 0 (window-vscroll window t))
             :start (window-start window)
             :point (window-point window)))))
 
@@ -279,26 +280,19 @@ TREE contains additional window state like point and scroll."
         ('pdf
          (when (eq major-mode 'pdf-view-mode)
            (let ((page (plist-get buffer-state :page))
-                 (slice (plist-get buffer-state :slice))
                  (scale (plist-get buffer-state :scale)))
-             ;; Clear any existing rendering state if function exists
+             ;; Clear image cache to remove any artifacts from hscroll
              (when (fboundp 'pdf-cache-clear-images)
                (pdf-cache-clear-images))
-             ;; Restore PDF state
+             ;; Restore page first
              (when page
                (pdf-view-goto-page page))
-             (when slice
-               (apply #'pdf-view-set-slice slice))
+             ;; Then restore scale if saved
              (when (and scale (boundp 'pdf-view-display-size))
                (setq pdf-view-display-size scale)
                (pdf-view-redisplay t))
-             ;; Skip hscroll/vscroll restoration for PDFs to avoid rendering artifacts
-             ;; Explicitly reset scroll positions to prevent rendering artifacts
-             (set-window-hscroll window 0)
-             (set-window-vscroll window 0 t)
-             ;; Force a complete redisplay and give pdf-tools time to settle
-             (redisplay t)
-             (sit-for 0.1))))
+             ;; Force complete re-render to clear hscroll artifacts
+             (pdf-view-redisplay t))))
 
         ('epub
          (when (eq major-mode 'nov-mode)
@@ -325,12 +319,18 @@ TREE contains additional window state like point and scroll."
           (when buffer
             (set-window-buffer window buffer)
             ;; Apply buffer-specific state (PDF page, EPUB position, etc.)
-            ;; This includes scroll positions for PDFs
             (buffer-restore--apply-buffer-state-to-window window buffer-state tree)
-            ;; For non-PDF buffers, set window start
+            ;; For non-PDF buffers, restore scroll positions
             (unless (eq (plist-get buffer-state :type) 'pdf)
               (set-window-start window (plist-get tree :start) t)
-              (set-window-hscroll window (plist-get tree :hscroll)))))
+              (set-window-hscroll window (plist-get tree :hscroll)))
+            ;; For PDFs, explicitly zero out scroll to fix artifacts from old sessions
+            (when (eq (plist-get buffer-state :type) 'pdf)
+              (set-window-hscroll window 0)
+              (set-window-vscroll window 0 t)
+              ;; Force another redisplay after clearing scroll
+              (when (fboundp 'pdf-view-redisplay)
+                (pdf-view-redisplay t)))))
       ;; Split - recursively restore children
       (let* ((horizontal (plist-get tree :horizontal))
              (children (plist-get tree :children))
@@ -624,7 +624,9 @@ NAME is the name to give this workspace."
                            (actual-left (+ pos-left left-offset))
                            (actual-top (+ pos-top top-offset))
                            ;; Mark if this is the selected/dominant frame
-                           (is-selected (eq frame selected-frame-obj)))
+                           (is-selected (eq frame selected-frame-obj))
+                           ;; Capture iconified (minimized) state
+                           (iconified (frame-parameter frame 'visibility)))
                       (list :frame-width (frame-width frame)
                             :frame-height (frame-height frame)
                             :frame-pixel-width (frame-pixel-width frame)
@@ -633,6 +635,7 @@ NAME is the name to give this workspace."
                             :frame-left actual-left
                             :frame-top actual-top
                             :dominant is-selected
+                            :iconified (eq iconified 'icon)
                             :window-tree (buffer-restore--capture-window-tree frame))))
                   frames))
          (workspace (list :name name
@@ -749,8 +752,10 @@ This will close all existing frames and restore the saved workspace."
           (let ((window-tree (plist-get first-session :window-tree)))
             (buffer-restore--restore-window-tree window-tree))
 
-          ;; Raise frame to ensure it's visible
-          (raise-frame frame)))
+          ;; Restore iconified state or make visible
+          (if (plist-get first-session :iconified)
+              (iconify-frame frame)
+            (raise-frame frame))))
 
       ;; Create new frames for remaining (non-dominant) sessions
       (let ((frame-num 1)
@@ -786,8 +791,10 @@ This will close all existing frames and restore the saved workspace."
                 (let ((window-tree (plist-get session :window-tree)))
                   (buffer-restore--restore-window-tree window-tree)))
 
-              ;; Ensure frame is visible (don't use lower-frame as it may iconify)
-              (make-frame-visible new-frame)))))
+              ;; Restore iconified state or make visible
+              (if (plist-get session :iconified)
+                  (iconify-frame new-frame)
+                (make-frame-visible new-frame))))))
 
       ;; Finally, raise and focus the dominant frame to ensure it's on top of everything
       (let ((dominant-frame (selected-frame)))
