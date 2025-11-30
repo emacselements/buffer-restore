@@ -180,10 +180,7 @@ Returns the restored buffer or nil if restoration failed."
              (when (and file (file-exists-p file))
                ;; Just open the file, don't set PDF state yet
                ;; We'll do that after the window is set up
-               (let ((buf (find-file-noselect file)))
-                 (with-current-buffer buf
-                   (set-buffer-modified-p nil))
-                 buf))))
+               (find-file-noselect file))))
 
           ('epub
            (let ((file (plist-get buffer-state :file)))
@@ -197,8 +194,7 @@ Returns the restored buffer or nil if restoration failed."
                        (when index
                          (nov-goto-document index))
                        (when point
-                         (goto-char (min point (point-max))))))
-                   (set-buffer-modified-p nil))
+                         (goto-char (min point (point-max)))))))
                  buf))))
 
           ('file
@@ -208,8 +204,7 @@ Returns the restored buffer or nil if restoration failed."
                      (point (plist-get buffer-state :point)))
                  (with-current-buffer buf
                    (when point
-                     (goto-char (min point (point-max))))
-                   (set-buffer-modified-p nil))
+                     (goto-char (min point (point-max)))))
                  buf))))
 
           ('dired
@@ -219,8 +214,7 @@ Returns the restored buffer or nil if restoration failed."
                      (point (plist-get buffer-state :point)))
                  (with-current-buffer buf
                    (when point
-                     (goto-char (min point (point-max))))
-                   (set-buffer-modified-p nil))
+                     (goto-char (min point (point-max)))))
                  buf))))
 
           ('special
@@ -723,11 +717,21 @@ This will close all existing frames and restore the saved workspace."
         (dolist (frame frames-to-delete)
           (delete-frame frame)))
 
-      ;; Kill all file-visiting buffers to ensure clean restoration
+      ;; Save or prompt for any modified buffers before cleaning up
       (dolist (buffer (buffer-list))
         (when (or (buffer-file-name buffer)
                   (with-current-buffer buffer
                     (memq major-mode '(pdf-view-mode nov-mode))))
+          (with-current-buffer buffer
+            (when (and (buffer-modified-p)
+                       (buffer-file-name))
+              ;; For file buffers, prompt to save if modified
+              (if (y-or-n-p (format "Save file %s? " (buffer-file-name)))
+                  (save-buffer)
+                ;; If user says no, ask if they want to discard changes
+                (unless (y-or-n-p (format "Discard unsaved changes in %s? " (buffer-file-name)))
+                  (user-error "Workspace load cancelled")))))
+          ;; Now kill the buffer
           (kill-buffer buffer)))
 
       ;; Restore dominant frame first in the existing frame (or first if no dominant)
