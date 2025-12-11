@@ -82,12 +82,13 @@ Returns a plist with buffer information."
        ;; PDF buffers (pdf-tools)
        ((eq mode 'pdf-view-mode)
         (let ((page (ignore-errors (pdf-view-current-page)))
+              (slice (ignore-errors (pdf-view-current-slice)))
               (scale (when (boundp 'pdf-view-display-size)
                        pdf-view-display-size)))
           (list :type 'pdf
                 :file file
                 :page page
-                ;; Don't save slice - it causes rendering artifacts
+                :slice (buffer-restore--serialize-value slice)
                 :scale (buffer-restore--serialize-value scale))))
 
        ;; EPUB buffers (nov-mode)
@@ -125,8 +126,7 @@ Returns a plist with buffer information."
   "Capture the state of WINDOW including its buffer.
 Returns a plist with window information."
   (let* ((buffer (window-buffer window))
-         (buffer-state (buffer-restore--capture-buffer-state buffer))
-         (is-pdf (with-current-buffer buffer (eq major-mode 'pdf-view-mode))))
+         (buffer-state (buffer-restore--capture-buffer-state buffer)))
     (when buffer-state
       (list :buffer-state buffer-state
             :width (window-total-width window)
@@ -135,9 +135,8 @@ Returns a plist with window information."
                         (nth 1 (window-edges window))
                         (nth 2 (window-edges window))
                         (nth 3 (window-edges window)))
-            ;; Don't save scroll positions for PDFs - they cause artifacts
-            :hscroll (if is-pdf 0 (window-hscroll window))
-            :vscroll (if is-pdf 0 (window-vscroll window t))
+            :hscroll (window-hscroll window)
+            :vscroll (window-vscroll window t)
             :start (window-start window)
             :point (window-point window)))))
 
@@ -274,19 +273,22 @@ TREE contains additional window state like point and scroll."
         ('pdf
          (when (eq major-mode 'pdf-view-mode)
            (let ((page (plist-get buffer-state :page))
-                 (scale (plist-get buffer-state :scale)))
-             ;; Clear image cache to remove any artifacts from hscroll
-             (when (fboundp 'pdf-cache-clear-images)
-               (pdf-cache-clear-images))
-             ;; Restore page first
+                 (slice (plist-get buffer-state :slice))
+                 (scale (plist-get buffer-state :scale))
+                 (hscroll (plist-get tree :hscroll))
+                 (vscroll (plist-get tree :vscroll)))
              (when page
                (pdf-view-goto-page page))
-             ;; Then restore scale if saved
+             (when slice
+               (apply #'pdf-view-set-slice slice))
              (when (and scale (boundp 'pdf-view-display-size))
                (setq pdf-view-display-size scale)
-               (pdf-view-redisplay t))
-             ;; Force complete re-render to clear hscroll artifacts
-             (pdf-view-redisplay t))))
+               (pdf-view-redisplay))
+             ;; Restore exact scroll positions for PDFs
+             (when hscroll
+               (set-window-hscroll window hscroll))
+             (when vscroll
+               (set-window-vscroll window vscroll t)))))
 
         ('epub
          (when (eq major-mode 'nov-mode)
@@ -313,18 +315,12 @@ TREE contains additional window state like point and scroll."
           (when buffer
             (set-window-buffer window buffer)
             ;; Apply buffer-specific state (PDF page, EPUB position, etc.)
+            ;; This includes scroll positions for PDFs
             (buffer-restore--apply-buffer-state-to-window window buffer-state tree)
-            ;; For non-PDF buffers, restore scroll positions
+            ;; For non-PDF buffers, set window start
             (unless (eq (plist-get buffer-state :type) 'pdf)
               (set-window-start window (plist-get tree :start) t)
-              (set-window-hscroll window (plist-get tree :hscroll)))
-            ;; For PDFs, explicitly zero out scroll to fix artifacts from old sessions
-            (when (eq (plist-get buffer-state :type) 'pdf)
-              (set-window-hscroll window 0)
-              (set-window-vscroll window 0 t)
-              ;; Force another redisplay after clearing scroll
-              (when (fboundp 'pdf-view-redisplay)
-                (pdf-view-redisplay t)))))
+              (set-window-hscroll window (plist-get tree :hscroll)))))
       ;; Split - recursively restore children
       (let* ((horizontal (plist-get tree :horizontal))
              (children (plist-get tree :children))
@@ -359,17 +355,6 @@ NAME is the name to give this session."
                          nil nil nil
                          'buffer-restore--session-history)))
   (buffer-restore--ensure-directory)
-
-  ;; Save all modified file-visiting buffers in the current frame
-  (let ((frame-buffers (delete-dups
-                        (mapcar #'window-buffer
-                                (window-list (selected-frame) 'no-minibuf)))))
-    (dolist (buf frame-buffers)
-      (when (and (buffer-live-p buf)
-                 (buffer-modified-p buf)
-                 (buffer-file-name buf))
-        (with-current-buffer buf
-          (save-buffer)))))
 
   (let* ((frame (selected-frame))
          (session (list :name name
@@ -589,49 +574,28 @@ NAME is the name to give this workspace."
                          'buffer-restore--workspace-history)))
   (buffer-restore--ensure-workspace-directory)
 
-  ;; Save all modified file-visiting buffers across all frames
-  (dolist (frame (frame-list))
-    (let ((frame-buffers (delete-dups
-                          (mapcar #'window-buffer
-                                  (window-list frame 'no-minibuf)))))
-      (dolist (buf frame-buffers)
-        (when (and (buffer-live-p buf)
-                   (buffer-modified-p buf)
-                   (buffer-file-name buf))
-          (with-current-buffer buf
-            (save-buffer))))))
-
   (let* ((selected-frame-obj (selected-frame))
          (frames (frame-list))
-         (frame-sessions
-          (mapcar (lambda (frame)
-                    (let* ((native-pos (frame-position frame))
-                           (pos-left (car native-pos))
-                           (pos-top (cdr native-pos))
-                           ;; Get both inner and outer edges for comparison
-                           (outer-edges (frame-edges frame 'outer-edges))
-                           (inner-edges (frame-edges frame 'inner-edges))
-                           ;; Calculate offset from outer to inner (decorations)
-                           (left-offset (- (nth 0 inner-edges) (nth 0 outer-edges)))
-                           (top-offset (- (nth 1 inner-edges) (nth 1 outer-edges)))
-                           ;; Use native position and add decoration offset
-                           (actual-left (+ pos-left left-offset))
-                           (actual-top (+ pos-top top-offset))
-                           ;; Mark if this is the selected/dominant frame
-                           (is-selected (eq frame selected-frame-obj))
-                           ;; Capture iconified (minimized) state
-                           (iconified (frame-parameter frame 'visibility)))
-                      (list :frame-width (frame-width frame)
-                            :frame-height (frame-height frame)
-                            :frame-pixel-width (frame-pixel-width frame)
-                            :frame-pixel-height (frame-pixel-height frame)
-                            ;; Store actual pixel positions
-                            :frame-left actual-left
-                            :frame-top actual-top
-                            :dominant is-selected
-                            :iconified (eq iconified 'icon)
-                            :window-tree (buffer-restore--capture-window-tree frame))))
-                  frames))
+           (frame-sessions
+            (mapcar (lambda (frame)
+              (let* (;; Use frame parameters directly to preserve special forms like (- 0)
+                 (param-left (frame-parameter frame 'left))
+                 (param-top (frame-parameter frame 'top))
+                 ;; Mark if this is the selected/dominant frame
+                 (is-selected (eq frame selected-frame-obj))
+                 ;; Capture iconified (minimized) state
+                 (iconified (frame-parameter frame 'visibility)))
+                (list :frame-width (frame-width frame)
+                  :frame-height (frame-height frame)
+                  :frame-pixel-width (frame-pixel-width frame)
+                  :frame-pixel-height (frame-pixel-height frame)
+                  ;; Store frame parameter positions without conversion
+                  :frame-left param-left
+                  :frame-top param-top
+                  :dominant is-selected
+                  :iconified (eq iconified 'icon)
+                  :window-tree (buffer-restore--capture-window-tree frame))))
+            frames))
          (workspace (list :name name
                          :timestamp (current-time)
                          :frames frame-sessions))
@@ -717,21 +681,11 @@ This will close all existing frames and restore the saved workspace."
         (dolist (frame frames-to-delete)
           (delete-frame frame)))
 
-      ;; Save or prompt for any modified buffers before cleaning up
+      ;; Kill all file-visiting buffers to ensure clean restoration
       (dolist (buffer (buffer-list))
         (when (or (buffer-file-name buffer)
                   (with-current-buffer buffer
                     (memq major-mode '(pdf-view-mode nov-mode))))
-          (with-current-buffer buffer
-            (when (and (buffer-modified-p)
-                       (buffer-file-name))
-              ;; For file buffers, prompt to save if modified
-              (if (y-or-n-p (format "Save file %s? " (buffer-file-name)))
-                  (save-buffer)
-                ;; If user says no, ask if they want to discard changes
-                (unless (y-or-n-p (format "Discard unsaved changes in %s? " (buffer-file-name)))
-                  (user-error "Workspace load cancelled")))))
-          ;; Now kill the buffer
           (kill-buffer buffer)))
 
       ;; Restore dominant frame first in the existing frame (or first if no dominant)
@@ -743,20 +697,40 @@ This will close all existing frames and restore the saved workspace."
                (frame-left (plist-get first-session :frame-left))
                (frame-top (plist-get first-session :frame-top)))
 
-          ;; Restore frame position first (before size changes)
-          (when (and frame-left frame-top (numberp frame-left) (numberp frame-top))
-            (set-frame-position frame frame-left frame-top))
+          ;; Ensure pixel-precise sizing/positioning
+          (modify-frame-parameters frame '((frame-resize-pixelwise . t)
+                                           (user-size . t)
+                                           (user-position . t)))
 
-          ;; Then restore frame size
+          ;; Restore frame size first
           (when (and frame-width frame-height)
             (set-frame-size frame frame-width frame-height))
+
+          ;; Restore frame position using frame parameters (allows special values like (- 0))
+          (when (and frame-left frame-top)
+            (modify-frame-parameters frame
+                                     `((left . ,frame-left)
+                                       (top . ,frame-top))))
+          ;; If numeric positions drift, retry a few times to nudge into place
+          (when (and (numberp frame-left) (numberp frame-top))
+            (let ((attempts 0)
+                  (max-attempts 5))
+              (while (< attempts max-attempts)
+                (let* ((pos (frame-position frame))
+                       (dx (- (car pos) frame-left))
+                       (dy (- (cdr pos) frame-top)))
+                  (if (and (= dx 0) (= dy 0))
+                      (setq attempts max-attempts)
+                    (set-frame-position frame frame-left frame-top)
+                    (sit-for 0.05)
+                    (setq attempts (1+ attempts)))))))
 
           ;; Delete all windows and restore window tree
           (delete-other-windows)
           (let ((window-tree (plist-get first-session :window-tree)))
             (buffer-restore--restore-window-tree window-tree))
 
-          ;; Restore iconified state or make visible
+          ;; Restore iconified state or raise
           (if (plist-get first-session :iconified)
               (iconify-frame frame)
             (raise-frame frame))))
@@ -773,21 +747,19 @@ This will close all existing frames and restore the saved workspace."
                  (frame-left (plist-get session :frame-left))
                  (frame-top (plist-get session :frame-top)))
 
-            ;; Create frame with position parameters
+            ;; Create frame with position parameters (allow special values like (- 0))
             (let ((new-frame (make-frame
                              (append
-                              (when (and frame-left frame-top
-                                        (numberp frame-left) (numberp frame-top))
-                                (list (cons 'left frame-left)
-                                      (cons 'top frame-top)))
+                              '((user-position . t)
+                                (user-size . t)
+                                (frame-resize-pixelwise . t))
+                              (when frame-left
+                                (list (cons 'left frame-left)))
+                              (when frame-top
+                                (list (cons 'top frame-top)))
                               (when (and frame-width frame-height)
                                 (list (cons 'width frame-width)
                                       (cons 'height frame-height)))))))
-
-              ;; Verify and adjust position if needed
-              (when (and frame-left frame-top
-                        (numberp frame-left) (numberp frame-top))
-                (set-frame-position new-frame frame-left frame-top))
 
               ;; Restore window tree in new frame
               (with-selected-frame new-frame
@@ -798,7 +770,21 @@ This will close all existing frames and restore the saved workspace."
               ;; Restore iconified state or make visible
               (if (plist-get session :iconified)
                   (iconify-frame new-frame)
-                (make-frame-visible new-frame))))))
+                (make-frame-visible new-frame))
+
+              ;; If numeric positions drift, retry nudging into place
+              (when (and (numberp frame-left) (numberp frame-top))
+                (let ((attempts 0)
+                      (max-attempts 5))
+                  (while (< attempts max-attempts)
+                    (let* ((pos (frame-position new-frame))
+                           (dx (- (car pos) frame-left))
+                           (dy (- (cdr pos) frame-top)))
+                      (if (and (= dx 0) (= dy 0))
+                          (setq attempts max-attempts)
+                        (set-frame-position new-frame frame-left frame-top)
+                        (sit-for 0.05)
+                        (setq attempts (1+ attempts))))))))))
 
       ;; Finally, raise and focus the dominant frame to ensure it's on top of everything
       (let ((dominant-frame (selected-frame)))
@@ -816,7 +802,7 @@ This will close all existing frames and restore the saved workspace."
       (setq buffer-restore--workspace-history
             (cons name (delete name buffer-restore--workspace-history)))
 
-      (message "Workspace '%s' restored (%d frames)" name (length frame-sessions)))))
+      (message "Workspace '%s' restored (%d frames)" name (length frame-sessions))))))
 
 ;;;###autoload
 (defun buffer-restore-list-workspaces ()
