@@ -8,6 +8,10 @@ If you find this project helpful, consider supporting it!
 
 Manual session management for Emacs. Save and restore named window layouts with precise buffer states, including PDF pages and EPUB positions.
 
+## Demo
+
+[Watch the demo](https://youtu.be/Kf68nibRKXc)
+
 ## Installation
 
 ```elisp
